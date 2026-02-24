@@ -3,13 +3,16 @@ import { AppChatConfigTypeSchema } from '../../app/type';
 import { ParentIdSchema } from '../../../common/parentFolder/type';
 import { AppTypeEnum } from '../../app/constants';
 import { StoreNodeItemTypeSchema } from './node';
+import { WorkflowPatchSchema } from '../patch/type';
 import { I18nStringSchema } from '../../../common/i18n/type';
 import z from 'zod';
 
 export const WorkflowTemplateBasicTypeSchema = z.object({
   nodes: z.array(StoreNodeItemTypeSchema),
   edges: z.array(StoreEdgeItemTypeSchema),
-  chatConfig: AppChatConfigTypeSchema.optional()
+  chatConfig: AppChatConfigTypeSchema.optional(),
+  // Optional: used by Workflow Copilot or other tooling. Not required for runtime.
+  patch: WorkflowPatchSchema.optional()
 });
 export type WorkflowTemplateBasicType = z.infer<typeof WorkflowTemplateBasicTypeSchema>;
 
