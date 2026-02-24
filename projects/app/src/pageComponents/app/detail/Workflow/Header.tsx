@@ -26,6 +26,7 @@ import { useToast } from '@fastgpt/web/hooks/useToast';
 import { useSystemStore } from '@/web/common/system/useSystemStore';
 import PublishHistories from '../PublishHistoriesSlider';
 import SaveButton from '../Workflow/components/SaveButton';
+import CopilotButton from '../Workflow/components/CopilotButton';
 import {
   WorkflowSnapshotContext,
   type WorkflowSnapshotsType
@@ -199,6 +200,7 @@ const Header = () => {
                   }}
                 />
               )}
+              <CopilotButton />
               <Button
                 leftIcon={<MyIcon name={'core/workflow/debug'} w={['14px', '16px']} />}
                 w={'81px'}
