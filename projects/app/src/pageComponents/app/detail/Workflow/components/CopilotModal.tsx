@@ -49,7 +49,7 @@ const CopilotModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => voi
 
       setStreamText('');
 
-      const res = await fetch('/api/core/workflow/generate', {
+      const res = await fetch('/api/core/workflow/planGenerate', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -72,7 +72,6 @@ const CopilotModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => voi
       let buffer = '';
 
       const parseSseLine = (line: string) => {
-        // minimal SSE parsing: event: xxx \n data: yyy
         if (!line.startsWith('data:')) return null;
         return line.replace(/^data:\s?/, '');
       };
@@ -100,20 +99,20 @@ const CopilotModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => voi
             // ignore non-json lines
           }
 
-          // patch result is sent via tool event but still in SSE; we simply look for our marker
+          // plan/compiled result is sent via tool event but still in SSE
           try {
             const toolPayload = JSON.parse(dataStr);
-            if (toolPayload?.type === 'workflow_patch_result' && toolPayload?.result) {
-              applyResultToCanvas(toolPayload.result);
+            if (toolPayload?.type === 'workflow_plan_result' && toolPayload?.compiled) {
+              applyResultToCanvas(toolPayload.compiled);
               toast({
                 status: 'success',
                 title: '已生成并应用工作流'
               });
             }
-            if (toolPayload?.type === 'workflow_patch_error') {
+            if (toolPayload?.type === 'workflow_plan_error') {
               toast({
                 status: 'warning',
-                title: '生成结果无法解析为可用补丁',
+                title: '生成结果无法解析为可用计划',
                 description: toolPayload?.message
               });
             }
