@@ -15,6 +15,17 @@ import type { InputDataType } from './useInputDataModal';
 
 type IndexField = UseFieldArrayReturn<InputDataType, 'indexes'>['fields'][number];
 
+const systemIndexTypes = new Set<DatasetDataIndexTypeEnum>([
+  DatasetDataIndexTypeEnum.default,
+  DatasetDataIndexTypeEnum.summary,
+  DatasetDataIndexTypeEnum.question,
+  DatasetDataIndexTypeEnum.image,
+  DatasetDataIndexTypeEnum.imageEmbedding
+]);
+
+const isSystemIndex = (type?: DatasetDataIndexTypeEnum) =>
+  systemIndexTypes.has(type || DatasetDataIndexTypeEnum.custom);
+
 const IndexInputPanel = ({
   canWrite,
   deletingIndexClientId,
@@ -91,9 +102,9 @@ const IndexInputPanel = ({
             const canFoldIndex = indexes.length > 1;
             const hasIndexDataId = !!index.dataId;
             const isDeletingCurrentIndex = deletingIndexClientId === index.clientId;
-            const isDefaultIndex = index.type === DatasetDataIndexTypeEnum.default;
+            const isSystem = isSystemIndex(index.type);
             const canDeleteIndex =
-              canWrite && !isDefaultIndex && hasIndexDataId && !isDeletingCurrentIndex;
+              canWrite && !isSystem && hasIndexDataId && !isDeletingCurrentIndex;
             const canToggleFold = canFoldIndex && !isDeletingCurrentIndex;
 
             return (
@@ -152,7 +163,7 @@ const IndexInputPanel = ({
                   )}
                 </Flex>
                 <DataIndexTextArea
-                  disabled={!canWrite || isDefaultIndex}
+                  disabled={!canWrite || isSystem}
                   canClickMark={hasIndexDataId}
                   autoFocus={focusIndexClientId === index.clientId}
                   index={i}

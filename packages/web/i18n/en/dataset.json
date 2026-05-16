@@ -50,6 +50,7 @@
   "data_amount": "{{dataAmount}} chunks, {{indexAmount}} indexes",
   "data_error_amount": "{{errorAmount}} Group training exception",
   "data_index_image": "Image index",
+  "data_index_image_embedding": "Image vector index",
   "data_parsing": "Data analysis",
   "data_uploading": "Data is being uploaded: {{num}}%",
   "dataset.Chunk_Number": "Block number",

@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { replaceS3KeyToPreviewUrl } from '@fastgpt/service/core/dataset/utils';
+import {
+  buildDatasetDataIndexRebuildPlan,
+  getDatasetImageTrainingMode,
+  matchDatasetDataMarkdownImageUrls,
+  replaceS3KeyToPreviewUrl
+} from '@fastgpt/service/core/dataset/utils';
+import { DatasetDataIndexTypeEnum } from '@fastgpt/global/core/dataset/data/constants';
+import { TrainingModeEnum } from '@fastgpt/global/core/dataset/constants';
 
 vi.mock('@fastgpt/service/common/s3/utils', () => ({
   jwtSignS3DownloadToken: vi.fn(
@@ -437,5 +444,120 @@ describe('replaceS3KeyToPreviewUrl', () => {
       expect(result).toContain('https://google.com');
       expect(result).toContain('# 标题');
     });
+  });
+});
+
+describe('matchDatasetDataMarkdownImageUrls', () => {
+  it('应提取 markdown 图片 URL 并忽略普通链接', () => {
+    const result = matchDatasetDataMarkdownImageUrls(
+      '![a](dataset/team/a.png) [普通链接](https://example.com) ![b](https://img.test/b.jpg)'
+    );
+
+    expect(result).toEqual(['dataset/team/a.png', 'https://img.test/b.jpg']);
+  });
+});
+
+describe('getDatasetImageTrainingMode', () => {
+  it('有 VLM 且是图片数据时应走 imageParse', () => {
+    expect(
+      getDatasetImageTrainingMode({
+        supportVlm: true,
+        supportImageIndex: true,
+        imageId: 'dataset/team/image.png',
+        hasMarkdownImages: false
+      })
+    ).toBe(TrainingModeEnum.imageParse);
+  });
+
+  it('支持图片索引且正文有 markdown 图片时应走 image', () => {
+    expect(
+      getDatasetImageTrainingMode({
+        supportVlm: false,
+        supportImageIndex: true,
+        hasMarkdownImages: true
+      })
+    ).toBe(TrainingModeEnum.image);
+  });
+
+  it('没有图片索引能力时应回退 chunk', () => {
+    expect(
+      getDatasetImageTrainingMode({
+        supportVlm: false,
+        supportImageIndex: false,
+        hasMarkdownImages: true
+      })
+    ).toBe(TrainingModeEnum.chunk);
+  });
+});
+
+describe('buildDatasetDataIndexRebuildPlan', () => {
+  it('应基于图片能力生成 VLM 图片索引和图片向量索引', () => {
+    const result = buildDatasetDataIndexRebuildPlan({
+      indexes: [{ type: DatasetDataIndexTypeEnum.custom, text: 'manual' }],
+      existingIndexes: [
+        {
+          type: DatasetDataIndexTypeEnum.imageEmbedding,
+          text: 'dataset/team/old.png',
+          dataId: 'old_image_vector'
+        }
+      ],
+      oldQ: 'old',
+      nextQ: 'hello ![cat](dataset/team/cat.png)',
+      supportVlm: true,
+      supportImageEmbedding: true,
+      imageIndex: true,
+      autoIndexes: false,
+      imageDescMap: {
+        'dataset/team/cat.png': 'a cat on the table'
+      }
+    });
+
+    expect(result.needRebuildVlmImageIndex).toBe(false);
+    expect(result.indexes).toEqual([
+      { type: DatasetDataIndexTypeEnum.custom, text: 'manual' },
+      { type: DatasetDataIndexTypeEnum.image, text: 'hello a cat on the table' },
+      { type: DatasetDataIndexTypeEnum.imageEmbedding, text: 'dataset/team/cat.png' }
+    ]);
+  });
+
+  it('缺少图片描述时应返回需要异步重建 VLM 图片索引', () => {
+    const result = buildDatasetDataIndexRebuildPlan({
+      indexes: [],
+      existingIndexes: [],
+      oldQ: 'old',
+      nextQ: 'hello ![](dataset/team/cat.png)',
+      supportVlm: true,
+      supportImageEmbedding: false,
+      imageIndex: true
+    });
+
+    expect(result.needRebuildVlmImageIndex).toBe(true);
+    expect(result.indexes).toEqual([]);
+  });
+
+  it('图片集合应生成主图图片向量索引并复用已有 dataId', () => {
+    const result = buildDatasetDataIndexRebuildPlan({
+      indexes: [],
+      existingIndexes: [
+        {
+          type: DatasetDataIndexTypeEnum.imageEmbedding,
+          text: 'dataset/team/main.png',
+          dataId: 'main_vector'
+        }
+      ],
+      supportVlm: false,
+      supportImageEmbedding: true,
+      imageIndex: false,
+      isImageCollection: true,
+      imageId: 'dataset/team/main.png'
+    });
+
+    expect(result.indexes).toEqual([
+      {
+        type: DatasetDataIndexTypeEnum.imageEmbedding,
+        text: 'dataset/team/main.png',
+        dataId: 'main_vector'
+      }
+    ]);
   });
 });
