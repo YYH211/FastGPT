@@ -2,6 +2,9 @@ import { queryExtension } from '../../ai/functions/queryExtension';
 import { type ChatItemMiniType } from '@fastgpt/global/core/chat/type';
 import { hashStr } from '@fastgpt/global/common/string/tools';
 import { getLogger, LogCategories } from '../../../common/logger';
+import { getImageBase64 } from '../../../common/file/image/utils';
+import { getS3DatasetSource } from '../../../common/s3/sources/dataset';
+import { isS3ObjectKey } from '../../../common/s3/utils';
 
 const logger = getLogger(LogCategories.MODULE.DATASET.DATA);
 
@@ -15,6 +18,23 @@ export const computeFilterIntersection = (lists: (string[] | undefined)[]) => {
     const set = new Set(list);
     return acc.filter((id) => set.has(id));
   });
+};
+
+export const normalizeImageToBase64 = async (imageUrl: string) => {
+  if (imageUrl.startsWith('data:image/')) {
+    return imageUrl;
+  }
+
+  if (
+    isS3ObjectKey(imageUrl, 'dataset') ||
+    isS3ObjectKey(imageUrl, 'temp') ||
+    isS3ObjectKey(imageUrl, 'chat')
+  ) {
+    return getS3DatasetSource().getDatasetBase64Image(imageUrl);
+  }
+
+  const { completeBase64 } = await getImageBase64(imageUrl);
+  return completeBase64;
 };
 
 export const datasetSearchQueryExtension = async ({
@@ -44,7 +64,7 @@ export const datasetSearchQueryExtension = async ({
   };
 
   // 检查传入的 query 是否已经进行过扩展
-  let { queries, reRankQuery, alreadyExtension } = (() => {
+  const { alreadyExtension, ...queryParseResult } = (() => {
     /* if query already extension, direct parse */
     try {
       const jsonParse = JSON.parse(query);
@@ -55,7 +75,7 @@ export const datasetSearchQueryExtension = async ({
         reRankQuery: alreadyExtension ? queries.join('\n') : query,
         alreadyExtension
       };
-    } catch (error) {
+    } catch {
       return {
         queries: [query],
         reRankQuery: query,
@@ -63,6 +83,7 @@ export const datasetSearchQueryExtension = async ({
       };
     }
   })();
+  let { queries, reRankQuery } = queryParseResult;
 
   // Use LLM to generate extension queries
   const aiExtensionResult = await (async () => {

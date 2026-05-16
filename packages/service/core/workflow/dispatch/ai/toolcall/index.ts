@@ -29,7 +29,7 @@ type Response = DispatchNodeResultType<{
 }>;
 
 export const dispatchRunTools = async (props: DispatchToolModuleProps): Promise<Response> => {
-  let {
+  const {
     node: { nodeId, isEntry, inputs },
     runtimeNodes,
     runtimeEdges,
@@ -39,14 +39,13 @@ export const dispatchRunTools = async (props: DispatchToolModuleProps): Promise<
     lastInteractive,
     runningUserInfo,
     externalProvider,
-    usageId,
     responseChatItemId,
     params: {
       model,
       systemPrompt,
       userChatInput,
       history = 6,
-      fileUrlList: fileLinks,
+      fileUrlList,
       aiChatVision,
       aiChatReasoning,
       isResponseAnswerText = true,
@@ -64,9 +63,10 @@ export const dispatchRunTools = async (props: DispatchToolModuleProps): Promise<
     props.params.aiChatVision = aiChatVision && toolModel.vision;
     props.params.aiChatReasoning = aiChatReasoning && toolModel.reasoning;
     const fileUrlInput = inputs.find((item) => item.key === NodeInputKeyEnum.fileUrlList);
-    if (!fileUrlInput || !fileUrlInput.value || fileUrlInput.value.length === 0) {
-      fileLinks = undefined;
-    }
+    const fileLinks =
+      !fileUrlInput || !fileUrlInput.value || fileUrlInput.value.length === 0
+        ? undefined
+        : fileUrlList;
 
     const toolNodeIds = filterToolNodeIdByEdges({ nodeId, edges: runtimeEdges });
 
@@ -121,6 +121,7 @@ export const dispatchRunTools = async (props: DispatchToolModuleProps): Promise<
     const { userFiles } = await getMultiInput({
       fileLinks
     });
+    const fileUrls = userFiles.map((file) => file.url);
 
     const concatenateSystemPrompt = [toolModel.defaultSystemChatPrompt, systemPrompt]
       .filter(Boolean)
@@ -226,6 +227,7 @@ export const dispatchRunTools = async (props: DispatchToolModuleProps): Promise<
         toolNodes,
         toolModel,
         messages: adaptMessages,
+        fileUrls,
         childrenInteractiveParams:
           lastInteractive?.type === 'toolChildrenInteractive' ? lastInteractive.params : undefined
       });

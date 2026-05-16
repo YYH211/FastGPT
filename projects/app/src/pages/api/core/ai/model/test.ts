@@ -11,7 +11,7 @@ import {
 } from '@fastgpt/global/core/ai/model.schema';
 import { getAIApi } from '@fastgpt/service/core/ai/config';
 import { getLogger, LogCategories } from '@fastgpt/service/common/logger';
-import { getVectorsByText } from '@fastgpt/service/core/ai/embedding';
+import { getVectors } from '@fastgpt/service/core/ai/embedding';
 import { reRankRecall } from '@fastgpt/service/core/ai/rerank';
 import { aiTranscriptions } from '@fastgpt/service/core/ai/audio/transcriptions';
 import { isProduction } from '@fastgpt/global/common/system/constants';
@@ -21,7 +21,7 @@ const logger = getLogger(LogCategories.MODULE.AI.MODEL);
 
 export type testQuery = { model: string; channelId?: number };
 
-export type testBody = {};
+export type testBody = Record<string, never>;
 
 export type testResponse = any;
 
@@ -90,9 +90,14 @@ const testEmbeddingModel = async (
   model: EmbeddingModelItemType,
   headers: Record<string, string>
 ) => {
-  return getVectorsByText({
-    input: 'Hi',
+  return getVectors({
     model,
+    inputs: [
+      {
+        type: 'text',
+        input: 'Hi'
+      }
+    ],
     headers
   });
 };
