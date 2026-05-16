@@ -346,11 +346,17 @@ export const useInputDataModal = ({
     async (e: InputDataType) => {
       if (!dataId) return Promise.reject(t('common:error.unKnow'));
 
-      await putDatasetDataById({
+      const updateResult = await putDatasetDataById({
         dataId,
         q: e.q,
         a: currentTab === TabEnum.qa ? e.a : ''
       });
+      if (updateResult.rebuilding) {
+        return {
+          ...e,
+          dataId
+        };
+      }
       return refreshDataForm(dataId);
     },
     {

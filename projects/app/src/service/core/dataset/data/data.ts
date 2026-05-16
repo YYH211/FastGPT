@@ -6,19 +6,54 @@ import type {
   DatasetDataItemType,
   CreateDatasetDataPropsType
 } from '@fastgpt/global/core/dataset/type';
-import { getEmbeddingModel } from '@fastgpt/service/core/ai/model';
+import { getEmbeddingModel, isImageEmbeddingModel } from '@fastgpt/service/core/ai/model';
 import { mongoSessionRun } from '@fastgpt/service/common/mongo/sessionRun';
 import { type ClientSession } from '@fastgpt/service/common/mongo';
 import { MongoDatasetDataText } from '@fastgpt/service/core/dataset/data/dataTextSchema';
 import { DatasetDataIndexTypeEnum } from '@fastgpt/global/core/dataset/data/constants';
 import { isS3ObjectKey, removeS3TTL } from '@fastgpt/service/common/s3/utils';
 import { getS3DatasetSource } from '@fastgpt/service/common/s3/sources/dataset';
-import { DatasetDataIndexOperation } from '@/service/core/dataset/data/dataIndex';
+import {
+  DatasetDataIndexOperation,
+  type DatasetDataIndexDraft
+} from '@/service/core/dataset/data/dataIndex';
 
 type UpdateDatasetDataByIndexesProps = Omit<UpdateDatasetDataPropsType, 'indexes'> & {
   indexes: NonNullable<UpdateDatasetDataPropsType['indexes']>;
   model: string;
   indexSize?: number;
+};
+
+const getImageDisplayText = (imageId?: string) => {
+  if (!imageId) return '';
+
+  const filename = imageId.split('/').pop() || imageId;
+  return decodeURIComponent(filename).replace(/\.[^.]+$/, '') || filename;
+};
+
+const appendDataImageEmbeddingIndex = ({
+  indexes,
+  imageId,
+  embeddingModel
+}: {
+  indexes?: DatasetDataIndexDraft[];
+  imageId?: string;
+  embeddingModel: ReturnType<typeof getEmbeddingModel>;
+}) => {
+  if (!imageId || !isImageEmbeddingModel(embeddingModel)) return indexes;
+
+  const hasSameImageIndex = indexes?.some(
+    (item) => item.type === DatasetDataIndexTypeEnum.imageEmbedding && item.text === imageId
+  );
+  if (hasSameImageIndex) return indexes;
+
+  return [
+    ...(indexes || []),
+    {
+      type: DatasetDataIndexTypeEnum.imageEmbedding,
+      text: imageId
+    }
+  ];
 };
 
 /**
@@ -89,17 +124,24 @@ export class DatasetDataOperation {
     imageDescMap?: Record<string, string>;
     session?: ClientSession;
   }) {
-    if (!q || !datasetId || !collectionId || !embeddingModel) {
+    const dataQ = q || getImageDisplayText(imageId);
+
+    if (!dataQ || !datasetId || !collectionId || !embeddingModel) {
       return Promise.reject('q, datasetId, collectionId, embeddingModel is required');
     }
 
-    const embModel = getEmbeddingModel(embeddingModel);
+    const embModel = getEmbeddingModel(embeddingModel)!;
     indexSize = Math.min(embModel.maxToken, indexSize);
+    const inputIndexes = appendDataImageEmbeddingIndex({
+      indexes,
+      imageId,
+      embeddingModel: embModel
+    });
 
     // 默认索引和自定义索引在这里统一规范化，确保后续向量写入的输入已去重、切分。
     const newIndexes = await this.indexOperation.formatIndexes({
-      indexes,
-      q,
+      indexes: inputIndexes,
+      q: dataQ,
       a,
       indexSize,
       maxIndexSize: embModel.maxToken,
@@ -121,7 +163,7 @@ export class DatasetDataOperation {
           tmbId,
           datasetId,
           collectionId,
-          q,
+          q: dataQ,
           a,
           imageId,
           imageDescMap,
@@ -140,7 +182,7 @@ export class DatasetDataOperation {
           datasetId,
           collectionId,
           dataId: _id,
-          fullTextToken: await jiebaSplit({ text: `${q}\n${a}`.trim() })
+          fullTextToken: await jiebaSplit({ text: `${dataQ}\n${a}`.trim() })
         }
       ],
       { session, ordered: true }
@@ -194,7 +236,7 @@ export class DatasetDataOperation {
       q: nextQ,
       a: nextA,
       indexSize,
-      maxIndexSize: getEmbeddingModel(model).maxToken,
+      maxIndexSize: getEmbeddingModel(model)!.maxToken,
       indexPrefix
     });
     const indexesWithExistingDefaultIds = this.indexOperation.mergeExistingDefaultIndexIds({
@@ -207,7 +249,6 @@ export class DatasetDataOperation {
       currentIndexes: mongoData.indexes,
       nextIndexes: indexesWithExistingDefaultIds
     });
-    const deleteVectorIdList = this.indexOperation.getDeleteVectorIdList(patchResult);
 
     // 提前刷新 updateTime，保持旧接口“进入更新流程即更新时间”的行为。
     const updateTime = mongoData.updateTime;
@@ -222,6 +263,7 @@ export class DatasetDataOperation {
     });
 
     const newIndexes = this.indexOperation.getWritablePatchIndexes(patchResult);
+    const deleteVectorIdList = this.indexOperation.getDeleteVectorIdList(patchResult);
 
     await mongoSessionRun(async (session) => {
       // 仅在 Q/A 变化时记录历史，最多保留最近 10 条旧内容。
@@ -290,7 +332,7 @@ export class DatasetDataOperation {
     const mongoData = await MongoDatasetData.findById(dataId);
     if (!mongoData) return Promise.reject('Data not found');
 
-    const embModel = getEmbeddingModel(model);
+    const embModel = getEmbeddingModel(model)!;
     indexSize = Math.min(embModel.maxToken, indexSize);
 
     const defaultIndexes = await this.indexOperation.getDefaultIndexes({
@@ -312,7 +354,6 @@ export class DatasetDataOperation {
       currentIndexFilter: (index) => index.type === DatasetDataIndexTypeEnum.default,
       isSameIndex: (current, next) => current.text === next.text && current.type === next.type
     });
-    const deleteVectorIdList = this.indexOperation.getDeleteVectorIdList(patchResult);
 
     // 只为新增或变化的默认索引写入向量；未变化的索引继续使用原 dataId。
     const tokens = await this.indexOperation.insertVectorForPatch({
@@ -323,6 +364,7 @@ export class DatasetDataOperation {
     });
 
     const nextDefaultIndexes = this.indexOperation.getWritablePatchIndexes(patchResult);
+    const deleteVectorIdList = this.indexOperation.getDeleteVectorIdList(patchResult);
 
     const updateTime = mongoData.updateTime;
     const nextQ = q || mongoData.q;

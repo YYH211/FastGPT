@@ -24,6 +24,16 @@ const { mockCountPromptTokens } = vi.hoisted(() => ({
   mockCountPromptTokens: vi.fn(async (text: string) => text.length)
 }));
 
+const { mockGetDatasetBase64Image } = vi.hoisted(() => ({
+  mockGetDatasetBase64Image: vi.fn(async (imageUrl: string) => `data:image/png;base64,${imageUrl}`)
+}));
+
+vi.mock('@fastgpt/service/common/s3/sources/dataset', () => ({
+  getS3DatasetSource: vi.fn(() => ({
+    getDatasetBase64Image: mockGetDatasetBase64Image
+  }))
+}));
+
 vi.mock('@fastgpt/service/common/string/tiktoken', () => ({
   countPromptTokens: mockCountPromptTokens
 }));
@@ -103,6 +113,7 @@ describe('DatasetDataIndexOperation', () => {
   beforeEach(() => {
     resetVectorMocks();
     mockGetVectorsByText.mockClear();
+    mockGetDatasetBase64Image.mockClear();
     mockCountPromptTokens.mockClear();
     vi.mocked(getEmbeddingModel).mockReturnValue(embeddingModel);
     mockGetVectorsByText.mockImplementation(async ({ inputs }) =>
@@ -324,6 +335,58 @@ describe('DatasetDataIndexOperation', () => {
       expect(tokens).toBe(0);
       expect(mockVectorInsert).not.toHaveBeenCalled();
     });
+
+    it('should insert text and image embedding patch items with separate vector calls', async () => {
+      const operation = new DatasetDataIndexOperation({
+        ...embeddingModel,
+        vision: true
+      });
+      mockVectorInsert
+        .mockResolvedValueOnce({ insertIds: ['text_vector_id'] })
+        .mockResolvedValueOnce({ insertIds: ['image_vector_id'] });
+      const patchResult = operation.buildPatch({
+        currentIndexes: [],
+        nextIndexes: [
+          { type: DatasetDataIndexTypeEnum.custom, text: 'text index' },
+          {
+            type: DatasetDataIndexTypeEnum.imageEmbedding,
+            text: 'dataset/team/collection/image.png'
+          }
+        ]
+      });
+
+      const tokens = await operation.insertVectorForPatch({
+        patchResult,
+        teamId: 'team_id',
+        datasetId: 'dataset_id',
+        collectionId: 'collection_id'
+      });
+
+      expect(tokens).toBeGreaterThan(0);
+      expect(mockVectorInsert).toHaveBeenCalledTimes(2);
+      expect(mockGetVectorsByText).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          inputs: [{ type: 'text', input: 'text index' }]
+        })
+      );
+      expect(mockGetVectorsByText).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          inputs: [
+            { type: 'image', input: 'data:image/png;base64,dataset/team/collection/image.png' }
+          ]
+        })
+      );
+      expect(operation.getWritablePatchIndexes(patchResult)).toEqual([
+        { type: DatasetDataIndexTypeEnum.custom, text: 'text index', dataId: 'text_vector_id' },
+        {
+          type: DatasetDataIndexTypeEnum.imageEmbedding,
+          text: 'dataset/team/collection/image.png',
+          dataId: 'image_vector_id'
+        }
+      ]);
+    });
   });
 
   describe('insertVectors and deleteVectors', () => {
@@ -344,6 +407,25 @@ describe('DatasetDataIndexOperation', () => {
         { type: DatasetDataIndexTypeEnum.custom, text: 'one', dataId: 'id_1' },
         { type: DatasetDataIndexTypeEnum.default, text: 'two', dataId: 'id_2' }
       ]);
+    });
+
+    it('should skip image embedding indexes when the model does not support image input', async () => {
+      const operation = new DatasetDataIndexOperation(embeddingModel);
+
+      const result = await operation.insertVectors({
+        indexes: [
+          { type: DatasetDataIndexTypeEnum.custom, text: 'one' },
+          { type: DatasetDataIndexTypeEnum.imageEmbedding, text: 'dataset/team/image.png' }
+        ],
+        teamId: 'team_id',
+        datasetId: 'dataset_id',
+        collectionId: 'collection_id'
+      });
+
+      expect(result.indexes).toEqual([
+        { type: DatasetDataIndexTypeEnum.custom, text: 'one', dataId: 'id_1' }
+      ]);
+      expect(mockVectorInsert).toHaveBeenCalledTimes(1);
     });
 
     it('should skip vector delete when id list is empty', async () => {
@@ -456,6 +538,15 @@ describe('DatasetDataIndexOperation', () => {
       ).rejects.toBe('System indexes cannot be saved separately');
 
       await expect(
+        createDatasetDataIndex({
+          data: dataItem,
+          type: DatasetDataIndexTypeEnum.imageEmbedding,
+          text: 'dataset/team/image.png',
+          model: 'text-embedding-3-small'
+        })
+      ).rejects.toBe('System indexes cannot be saved separately');
+
+      await expect(
         updateDatasetDataIndex({
           data: dataItem,
           indexDataId: 'missing_id',
@@ -523,6 +614,21 @@ describe('DatasetDataIndexOperation', () => {
         deleteDatasetDataIndex({
           data: dataItem,
           indexDataId: 'default_id'
+        })
+      ).rejects.toBe('System indexes cannot be deleted separately');
+
+      const imageData = await createData([
+        {
+          type: DatasetDataIndexTypeEnum.imageEmbedding,
+          text: 'dataset/team/image.png',
+          dataId: 'image_id'
+        }
+      ]);
+
+      await expect(
+        deleteDatasetDataIndex({
+          data: imageData.dataItem,
+          indexDataId: 'image_id'
         })
       ).rejects.toBe('System indexes cannot be deleted separately');
     });
