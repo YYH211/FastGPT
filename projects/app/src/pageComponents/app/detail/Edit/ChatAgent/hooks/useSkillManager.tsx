@@ -107,11 +107,9 @@ export const useSkillManager = ({
   const { toast } = useToast();
 
   /* ===== System tool ===== */
-  const { data: systemTools = [] } = useRequest(
-    async () => {
-      const data = await getAppToolTemplates({ getAll: true }).catch(() => {
-        return [];
-      });
+  const getSystemToolList = useCallback(
+    async ({ searchKey }: { searchKey?: string } = {}) => {
+      const data = await getAppToolTemplates({ getAll: true, searchKey }).catch(() => []);
       const apiTools = data
         .map<SkillItemType>((item) => {
           return {
@@ -165,17 +163,33 @@ export const useSkillManager = ({
         });
       }
 
-      return apiTools;
+      const normalizedSearchKey = searchKey?.trim().toLocaleLowerCase();
+      if (!normalizedSearchKey) return apiTools;
+
+      return apiTools.filter((item) => {
+        const searchableText = [
+          item.id,
+          item.label,
+          item.description,
+          ...(item.tools?.flatMap((tool) => [tool.id, tool.name]) ?? [])
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLocaleLowerCase();
+
+        return searchableText.includes(normalizedSearchKey);
+      });
     },
-    {
-      manual: false
-    }
+    [i18n.language]
   );
+  const { data: systemTools = [] } = useRequest(() => getSystemToolList(), {
+    manual: false
+  });
   const onLoadSystemTool = useCallback(
-    async ({}: { searchKey?: string }) => {
-      return systemTools;
+    async ({ searchKey }: { searchKey?: string }) => {
+      return searchKey ? getSystemToolList({ searchKey }) : systemTools;
     },
-    [systemTools]
+    [getSystemToolList, systemTools]
   );
 
   /* ===== Team agents/tools ===== */
@@ -309,7 +323,10 @@ export const useSkillManager = ({
       // Check tool exists, if exists, not update/add tool
       const existsTool = lastSelectedTools.current?.find((tool) => tool.pluginId === toolId);
       if (existsTool) {
-        const skill = toSkillLabelItem(existsTool, getToolConfigStatus({ tool: existsTool }).status);
+        const skill = toSkillLabelItem(
+          existsTool,
+          getToolConfigStatus({ tool: existsTool }).status
+        );
 
         return {
           id: skill.id,
@@ -406,9 +423,99 @@ export const useSkillManager = ({
     ]
   );
 
+  const onSearchSkill = useCallback(
+    async (searchKey: string): Promise<SkillOptionItemType> => {
+      const query = searchKey.trim();
+      if (!query) return { list: [] };
+
+      const skillSearchTask = onAddAgentSkill
+        ? getSkillList({
+            source: 'mine',
+            searchKey: query,
+            parentId: '',
+            page: 1,
+            pageSize: 50,
+            withAppCount: false
+          })
+        : Promise.resolve({ list: [], total: 0 });
+
+      const [systemResult, toolResult, agentResult, skillResult] = await Promise.allSettled([
+        getSystemToolList({ searchKey: query }),
+        getTeamAppTemplates({ searchKey: query, type: ToolTypeList }),
+        getTeamAppTemplates({ searchKey: query, type: AppTypeList }),
+        skillSearchTask
+      ]);
+
+      const searchItems: SkillItemType[] = [];
+
+      if (systemResult.status === 'fulfilled') {
+        searchItems.push(
+          ...systemResult.value.map((item) => ({
+            ...item,
+            isFolder: false,
+            onClick: onAddAppOrTool
+          }))
+        );
+      }
+
+      if (toolResult.status === 'fulfilled') {
+        searchItems.push(
+          ...toolResult.value
+            .filter((item) => !AppFolderTypeList.includes(item.appType))
+            .map((item) => ({
+              id: item.id,
+              label: item.name,
+              icon: item.avatar,
+              description: item.intro,
+              canClick: true,
+              isFolder: false,
+              onClick: onAddAppOrTool
+            }))
+        );
+      }
+
+      if (agentResult.status === 'fulfilled') {
+        searchItems.push(
+          ...agentResult.value
+            .filter((item) => !AppFolderTypeList.includes(item.appType))
+            .map((item) => ({
+              id: item.id,
+              label: item.name,
+              icon: item.avatar,
+              description: item.intro,
+              canClick: true,
+              isFolder: false,
+              onClick: onAddAppOrTool
+            }))
+        );
+      }
+
+      if (skillResult.status === 'fulfilled') {
+        cacheAgentSkillList(skillResult.value.list);
+        searchItems.push(
+          ...skillResult.value.list
+            .filter((item) => item.type === AgentSkillTypeEnum.skill)
+            .map((item) => ({
+              id: item._id,
+              label: item.name,
+              icon: item.avatar || 'core/skill/default',
+              description: item.description,
+              canClick: true,
+              isFolder: false,
+              onClick: onAddSkill
+            }))
+        );
+      }
+
+      return { list: searchItems };
+    },
+    [cacheAgentSkillList, getSystemToolList, onAddAgentSkill, onAddAppOrTool, onAddSkill]
+  );
+
   /* ===== Skill option ===== */
   const skillOption = useMemo<SkillOptionItemType>(() => {
     return {
+      onSearch: onSearchSkill,
       onSelect: async (id: string) => {
         if (id === 'systemTool') {
           const data = await onLoadSystemTool({});
@@ -476,6 +583,7 @@ export const useSkillManager = ({
     onAddAppOrTool,
     onAddSkill,
     onAddAgentSkill,
+    onSearchSkill,
     onLoadSystemTool,
     myTools,
     myAgents,

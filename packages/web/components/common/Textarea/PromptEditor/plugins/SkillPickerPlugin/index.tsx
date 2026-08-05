@@ -21,7 +21,7 @@ import { useBasicTypeaheadTriggerMatch } from '../../utils';
 import Avatar from '../../../../Avatar';
 import MyIcon from '../../../../Icon';
 import MyBox from '../../../../MyBox';
-import { useMount } from 'ahooks';
+import { useDebounce, useMount } from 'ahooks';
 import { useRequest } from '../../../../../../hooks/useRequest';
 import type { ParentIdType } from '@fastgpt/global/common/parentFolder/type';
 import { useTranslation } from 'next-i18next';
@@ -35,7 +35,8 @@ export type SkillOptionItemType = {
   description?: string;
   list: SkillItemType[];
   onSelect?: (id: string) => Promise<SkillOptionItemType | undefined>;
-  onClick?: (id: string) => Promise<SkillClickResult | undefined>;
+  onSearch?: (searchKey: string) => Promise<SkillOptionItemType | undefined>;
+  onClick?: SkillClickHandler;
   onFolderLoad?: (id: string) => Promise<SkillItemType[]>;
 };
 
@@ -44,6 +45,8 @@ export type SkillClickResult = {
   skill: SkillLabelItemType;
 };
 
+export type SkillClickHandler = (id: string) => Promise<SkillClickResult | undefined>;
+
 export type SkillItemType = {
   parentId?: ParentIdType;
   id: string;
@@ -51,6 +54,7 @@ export type SkillItemType = {
   icon?: string;
   description?: string;
   canClick: boolean;
+  onClick?: SkillClickHandler;
   children?: SkillOptionItemType;
 
   // Folder
@@ -65,6 +69,18 @@ export type SkillItemType = {
   }[];
 };
 
+/**
+ * 获取列表项最终的点击处理器。搜索结果可能来自多个资源类型，点击回调需要挂在单项上；
+ * 普通目录仍沿用列级 onClick，保持原有懒加载菜单行为。
+ */
+const getSkillItemClick = ({
+  item,
+  option
+}: {
+  item: SkillItemType;
+  option?: SkillOptionItemType;
+}) => item.onClick ?? option?.onClick;
+
 export default function SkillPickerPlugin({
   skillOption,
   isFocus,
@@ -77,7 +93,19 @@ export default function SkillPickerPlugin({
   const { t } = useTranslation();
   const [skillOptions, setSkillOptions] = useState<SkillOptionItemType[]>([skillOption]);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [queryString, setQueryString] = useState('');
+  const [searchOption, setSearchOption] = useState<SkillOptionItemType>();
+  const [isSearchLoading, setIsSearchLoading] = useState(false);
+  const debouncedQueryString = useDebounce(queryString, { wait: 300 });
+  const searchRequestIdRef = useRef(0);
   const isMenuOpenRef = useRef(false);
+
+  const isSearchMode = queryString.trim().length > 0;
+  const visibleSkillOptions = useMemo(
+    () => (isSearchMode ? (searchOption ? [searchOption] : []) : skillOptions),
+    [isSearchMode, searchOption, skillOptions]
+  );
+  const onSearch = skillOption.onSearch;
 
   const updateMenuOpen = useCallback((open: boolean) => {
     isMenuOpenRef.current = open;
@@ -95,6 +123,36 @@ export default function SkillPickerPlugin({
 
     return () => window.clearTimeout(timer);
   }, [skillOption]);
+
+  useEffect(() => {
+    const searchKey = debouncedQueryString.trim();
+    const requestId = ++searchRequestIdRef.current;
+
+    if (!searchKey || !onSearch) {
+      return () => {
+        searchRequestIdRef.current += 1;
+      };
+    }
+
+    void onSearch(searchKey)
+      .then((result) => {
+        if (requestId !== searchRequestIdRef.current) return;
+        setSearchOption(result ?? { list: [] });
+      })
+      .catch(() => {
+        if (requestId !== searchRequestIdRef.current) return;
+        setSearchOption({ list: [] });
+      })
+      .finally(() => {
+        if (requestId === searchRequestIdRef.current) {
+          setIsSearchLoading(false);
+        }
+      });
+
+    return () => {
+      searchRequestIdRef.current += 1;
+    };
+  }, [debouncedQueryString, onSearch]);
 
   const [editor] = useLexicalComposerContext();
   const [selectedRowIndex, setSelectedRowIndex] = useState<Record<number, number>>({
@@ -139,7 +197,8 @@ export default function SkillPickerPlugin({
   // Recursively collects all visible items including expanded folder children for keyboard navigation
   const getFlattenedVisibleItems = useCallback(
     (columnIndex: number): SkillItemType[] => {
-      const column = skillOptions[columnIndex];
+      const column = visibleSkillOptions[columnIndex];
+      if (!column) return [];
 
       const flatten = (items: SkillItemType[]): SkillItemType[] => {
         const result: SkillItemType[] = [];
@@ -155,11 +214,11 @@ export default function SkillPickerPlugin({
 
       return flatten(column.list);
     },
-    [skillOptions]
+    [visibleSkillOptions]
   );
 
   // Handle item selection (hover/keyboard navigation)
-  const { runAsync: handleItemSelect, loading: isItemSelectLoading } = useRequest(
+  const { runAsync: handleItemSelect } = useRequest(
     async ({
       currentColumnIndex,
       item,
@@ -252,19 +311,28 @@ export default function SkillPickerPlugin({
   const itemClickLock = useRef(false);
   const [isItemClickLoading, setIsItemClickLoading] = useState(false);
   const { runAsync: handleItemClick } = useRequest(
-    async ({ item, option }: { item: SkillItemType; option?: SkillOptionItemType }) => {
-      if (!item.canClick || !option?.onClick || itemClickLock.current) {
+    async ({
+      item,
+      option,
+      matchingString
+    }: {
+      item: SkillItemType;
+      option?: SkillOptionItemType;
+      matchingString?: string | null;
+    }) => {
+      const onClick = getSkillItemClick({ item, option });
+      if (!item.canClick || !onClick || itemClickLock.current) {
         return;
       }
       itemClickLock.current = true;
       setIsItemClickLoading(true);
       try {
         // Step 1: Execute async onClick to get skillId (outside editor.update)
-        const result = await option.onClick(item.id);
+        const result = await onClick(item.id);
 
         // Step 2: Update editor with the skillId (inside a fresh editor.update)
         if (result) {
-          insertSkillResult(result);
+          insertSkillResult(result, matchingString);
           updateMenuOpen(false);
         }
       } catch (error) {
@@ -392,7 +460,7 @@ export default function SkillPickerPlugin({
 
         setInteractionMode('keyboard');
 
-        if (currentColumnIndex >= 0 && currentColumnIndex < skillOptions.length) {
+        if (currentColumnIndex >= 0 && currentColumnIndex < visibleSkillOptions.length) {
           const columnItems = getFlattenedVisibleItems(currentColumnIndex);
           if (!columnItems || columnItems.length === 0) return true;
 
@@ -403,7 +471,7 @@ export default function SkillPickerPlugin({
             handleItemSelect({
               currentColumnIndex: currentColumnIndex,
               item: columnItems[newIndex],
-              option: skillOptions[currentColumnIndex]
+              option: visibleSkillOptions[currentColumnIndex]
             });
 
             // Scroll into view after state update
@@ -430,7 +498,7 @@ export default function SkillPickerPlugin({
 
         setInteractionMode('keyboard');
 
-        if (currentColumnIndex >= 0 && currentColumnIndex < skillOptions.length) {
+        if (currentColumnIndex >= 0 && currentColumnIndex < visibleSkillOptions.length) {
           const columnItems = getFlattenedVisibleItems(currentColumnIndex);
           if (!columnItems || columnItems.length === 0) return true;
 
@@ -441,7 +509,7 @@ export default function SkillPickerPlugin({
             handleItemSelect({
               currentColumnIndex: currentColumnIndex,
               item: columnItems[newIndex],
-              option: skillOptions[currentColumnIndex]
+              option: visibleSkillOptions[currentColumnIndex]
             });
 
             // Scroll into view after state update
@@ -470,7 +538,7 @@ export default function SkillPickerPlugin({
 
         // Use functional updates to get the latest state
         setCurrentColumnIndex((prevColumnIndex) => {
-          if (prevColumnIndex >= skillOptions.length - 1) return prevColumnIndex;
+          if (prevColumnIndex >= visibleSkillOptions.length - 1) return prevColumnIndex;
 
           const newColumnIndex = prevColumnIndex + 1;
 
@@ -481,8 +549,8 @@ export default function SkillPickerPlugin({
 
           setCurrentRowIndex(0);
 
-          // Use the latest skillOptions from closure to get the new column items
-          const newColumnOption = skillOptions[newColumnIndex];
+          // Use the latest visible options from closure to get the new column items
+          const newColumnOption = visibleSkillOptions[newColumnIndex];
           const newColumnItems = newColumnOption?.list;
           if (newColumnItems && newColumnItems.length > 0) {
             handleItemSelect({
@@ -559,7 +627,9 @@ export default function SkillPickerPlugin({
 
         const flattenedItems = getFlattenedVisibleItems(currentColumnIndex);
         const latestItem = flattenedItems[currentRowIndex];
-        const latestOption = skillOptions[currentColumnIndex];
+        const latestOption = visibleSkillOptions[currentColumnIndex];
+
+        if (!latestItem || isSearchMode) return true;
 
         if (!(latestItem.open && latestItem.folderChildren?.length === 0)) {
           handleFolderToggle({
@@ -587,15 +657,19 @@ export default function SkillPickerPlugin({
 
         const flattenedItems = getFlattenedVisibleItems(currentColumnIndex);
         const latestItem = flattenedItems[currentRowIndex];
-        const latestOption = skillOptions[currentColumnIndex];
+        const latestOption = visibleSkillOptions[currentColumnIndex];
 
-        if (latestOption?.onClick) {
-          handleItemClick({ item: latestItem, option: latestOption });
+        if (latestItem && getSkillItemClick({ item: latestItem, option: latestOption })) {
+          handleItemClick({
+            item: latestItem,
+            option: latestOption,
+            matchingString: queryString
+          });
 
           return true;
         }
 
-        return false;
+        return isSearchMode;
       },
       COMMAND_PRIORITY_HIGH
     );
@@ -614,7 +688,9 @@ export default function SkillPickerPlugin({
     isMenuOpen,
     currentColumnIndex,
     currentRowIndex,
-    skillOptions,
+    visibleSkillOptions,
+    isSearchMode,
+    queryString,
     handleItemSelect,
     handleFolderToggle,
     handleItemClick,
@@ -624,10 +700,10 @@ export default function SkillPickerPlugin({
   ]);
 
   const selectedTool = useMemo(() => {
-    const item = skillOptions[currentColumnIndex]?.list[currentRowIndex];
+    const item = visibleSkillOptions[currentColumnIndex]?.list[currentRowIndex];
     if (!item || !item.canClick) return null;
     return item;
-  }, [skillOptions, currentColumnIndex, currentRowIndex]);
+  }, [visibleSkillOptions, currentColumnIndex, currentRowIndex]);
 
   // Recursively render item list
   const renderItemList = useCallback(
@@ -701,7 +777,8 @@ export default function SkillPickerPlugin({
                   } else {
                     handleItemClick({
                       item,
-                      option: columnData
+                      option: columnData,
+                      matchingString: queryString
                     });
                   }
                 }
@@ -785,6 +862,7 @@ export default function SkillPickerPlugin({
       loadingFolderIds,
       t,
       interactionMode,
+      queryString,
       handleFolderToggle,
       handleItemClick,
       handleItemSelect
@@ -827,13 +905,13 @@ export default function SkillPickerPlugin({
 
   // For LexicalTypeaheadMenuPlugin compatibility
   const menuOptions = useMemo(() => {
-    return skillOptions.flatMap((item) =>
+    return visibleSkillOptions.flatMap((item) =>
       item.list.map((item) => ({
         key: item.id,
         ...item
       }))
     );
-  }, [skillOptions]);
+  }, [visibleSkillOptions]);
   const onSelectOption = useCallback(
     async (
       selectedOption: any,
@@ -869,14 +947,26 @@ export default function SkillPickerPlugin({
   return (
     <LexicalTypeaheadMenuPlugin
       onQueryChange={(matchingString) => {
-        // Update menu open state based on query
+        const nextQueryString = matchingString ?? '';
+        if (nextQueryString.trim() !== queryString.trim()) {
+          searchRequestIdRef.current += 1;
+          setSearchOption(undefined);
+          setIsSearchLoading(nextQueryString.trim().length > 0 && !!onSearch);
+          setCurrentColumnIndex(0);
+          setCurrentRowIndex(0);
+          setSelectedRowIndex({ 0: 0 });
+        }
+        setQueryString(nextQueryString);
         updateMenuOpen(matchingString !== null);
       }}
       onSelectOption={onSelectOption}
       triggerFn={checkForTriggerMatch}
       options={menuOptions}
       menuRenderFn={(anchorElementRef, { selectOptionAndCleanUp }) => {
-        const shouldShow = skillOptions.length > 0 && anchorElementRef.current !== null && isFocus;
+        const shouldShow =
+          (visibleSkillOptions.length > 0 || isSearchMode) &&
+          anchorElementRef.current !== null &&
+          isFocus;
 
         return ReactDOM.createPortal(
           <Flex
@@ -885,16 +975,33 @@ export default function SkillPickerPlugin({
             align="flex-start"
             zIndex={99999}
           >
-            {skillOptions.map((column, index) => {
+            {visibleSkillOptions.map((column, index) => {
               return renderColumn(column, index, (item, option) => {
-                if (!option.onClick) return;
+                const onClick = getSkillItemClick({ item, option });
+                if (!onClick) return;
                 selectOptionAndCleanUp({
                   key: item.id,
                   ...item,
-                  onClick: option.onClick
+                  onClick
                 } as any);
               });
             })}
+
+            {isSearchMode && (!searchOption || searchOption.list.length === 0) && (
+              <MyBox
+                p={3}
+                borderRadius={'sm'}
+                w={'200px'}
+                boxShadow={
+                  '0 4px 10px 0 rgba(19, 51, 107, 0.10), 0 0 1px 0 rgba(19, 51, 107, 0.10)'
+                }
+                bg={'white'}
+                color={'myGray.500'}
+                fontSize={'sm'}
+              >
+                {isSearchLoading ? t('common:model_loading') : t('workflow:no_match_node')}
+              </MyBox>
+            )}
 
             {selectedTool && (
               <Box

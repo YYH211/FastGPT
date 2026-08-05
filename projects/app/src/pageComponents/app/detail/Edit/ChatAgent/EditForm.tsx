@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo } from 'react';
 import {
   Box,
   Flex,
@@ -16,6 +16,7 @@ import dynamic from 'next/dynamic';
 import Avatar from '@fastgpt/web/components/common/Avatar';
 import MyIcon from '@fastgpt/web/components/common/Icon';
 import PromptEditor from '@fastgpt/web/components/common/Textarea/PromptEditor';
+import type { SkillOptionItemType } from '@fastgpt/web/components/common/Textarea/PromptEditor/plugins/SkillPickerPlugin';
 import SearchParamsTip from '@/components/core/dataset/SearchParamsTip';
 import SettingLLMModel from '@/components/core/ai/SettingLLMModel';
 import { TTSTypeEnum } from '@/web/core/app/constants';
@@ -137,29 +138,51 @@ const EditForm = ({
   } = useDisclosure();
 
   const selectedModel = getWebLLMModel(appForm.aiSettings.model);
-  const promptSkillOption = useMemo(
+  const wrapSkillClick = useCallback(
+    (onClick: SkillOptionItemType['onClick']): SkillOptionItemType['onClick'] => {
+      if (!onClick) return;
+
+      return async (toolId: string) => {
+        const result = await onClick(toolId);
+
+        // AgentV2 提示词 @虚拟机 时，同步打开下方虚拟机开关。
+        if (result?.id === AGENT_SANDBOX_TOOLSET_ID && !appForm.aiSettings.useAgentSandbox) {
+          onChangeAgentSandbox(true);
+        }
+
+        return result;
+      };
+    },
+    [appForm.aiSettings.useAgentSandbox, onChangeAgentSandbox]
+  );
+  const promptSkillOption = useMemo<SkillOptionItemType>(
     () => ({
       ...skillOption,
+      onSearch: skillOption.onSearch
+        ? async (searchKey: string) => {
+            const option = await skillOption.onSearch?.(searchKey);
+            if (!option) return option;
+
+            return {
+              ...option,
+              list: option.list.map((item) => ({
+                ...item,
+                onClick: wrapSkillClick(item.onClick)
+              }))
+            };
+          }
+        : undefined,
       onSelect: async (id: string) => {
         const option = await skillOption.onSelect?.(id);
         if (!option?.onClick) return option;
 
         return {
           ...option,
-          onClick: async (toolId: string) => {
-            const result = await option.onClick?.(toolId);
-
-            // AgentV2 提示词 @虚拟机 时，同步打开下方虚拟机开关。
-            if (result?.id === AGENT_SANDBOX_TOOLSET_ID && !appForm.aiSettings.useAgentSandbox) {
-              onChangeAgentSandbox(true);
-            }
-
-            return result;
-          }
+          onClick: wrapSkillClick(option.onClick)
         };
       }
     }),
-    [appForm.aiSettings.useAgentSandbox, onChangeAgentSandbox, skillOption]
+    [skillOption, wrapSkillClick]
   );
   const tokenLimit = useMemo(() => {
     return selectedModel.quoteMaxToken || 3000;
